@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
  * (each button holds one <svg> of its own), and the package is marked
  * side-effect-free so the build keeps only these four.
  */
-import { Pause, Play, RotateCcw, StepForward } from 'lucide-react';
+import { Pause, Play, RotateCcw, Sparkles, StepForward } from 'lucide-react';
 import type {
   NodeConfig,
   NodeKind,
@@ -2975,6 +2975,9 @@ export interface TrafficControlProps {
    * control rather than an inapplicable one.
    */
   noTrafficSource: boolean;
+  /** Evaluate design action */
+  onEvaluate?: () => void;
+  isEvaluating?: boolean;
 }
 
 export function TrafficControl({
@@ -2988,6 +2991,8 @@ export function TrafficControl({
   lost,
   empty,
   noTrafficSource,
+  onEvaluate,
+  isEvaluating,
 }: TrafficControlProps) {
   const sliderId = useId();
 
@@ -3214,6 +3219,26 @@ export function TrafficControl({
         >
           <RotateCcw size={16} aria-hidden="true" />
         </button>
+        {onEvaluate && (
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost eval-trigger-btn"
+            onClick={onEvaluate}
+            aria-label="Evaluate design"
+            title="Evaluate design"
+            style={{
+              marginLeft: 'var(--sp-2)',
+              borderRadius: 'var(--r-btn)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 'var(--sp-1)',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <Sparkles size={14} aria-hidden="true" />
+            <span>{isEvaluating ? 'Evaluating...' : 'Evaluate Design'}</span>
+          </button>
+        )}
       </div>
     </div>
   );

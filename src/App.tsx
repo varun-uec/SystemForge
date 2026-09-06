@@ -58,6 +58,19 @@ import { usePreference } from './content/preferences';
 import { Settings } from './components/Settings';
 import { MainMenu } from './components/MainMenu';
 import { Designs } from './components/Designs';
+import { EvaluatorModal } from './components/EvaluatorModal';
+import {
+  evaluateTopology,
+  applyRemediation,
+  calculateEvaluationDiff,
+  REMEDIATION_REGISTRY,
+} from './sim/evaluator';
+import type {
+  EvaluationResult,
+  EvaluationDiff,
+  Finding,
+  HistoryIteration,
+} from './sim/evaluator';
 import { getDesign, saveDesign } from './savedDesigns';
 import { downloadBackup, restoreBackup } from './backup';
 import { PanelResizer } from './components/PanelResizer';
@@ -643,6 +656,13 @@ export default function App() {
 
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [architectureOpen, setArchitectureOpen] = useState(false);
+  const [evaluatorOpen, setEvaluatorOpen] = useState(false);
+  const [isEvaluating, setIsEvaluating] = useState(false);
+  const [evaluationResult, setEvaluationResult] = useState<EvaluationResult | null>(
+    null,
+  );
+  const [experimentHistory, setExperimentHistory] = useState<HistoryIteration[]>([]);
+  const [activeDiff, setActiveDiff] = useState<EvaluationDiff | null>(null);
 
   /* ---------------- panel layout ---------------- */
 
@@ -2203,6 +2223,116 @@ export default function App() {
     setSnapshot(engine.snapshot());
   }, [engine]);
 
+  const handleEvaluate = useCallback(() => {
+    setEvaluatorOpen(true);
+    setIsEvaluating(true);
+    setRunning(false);
+    runningRef.current = false;
+
+    setTimeout(() => {
+      try {
+        const currentTopology = topoLiveRef.current;
+        const res = evaluateTopology(currentTopology);
+        setEvaluationResult(res);
+
+        setExperimentHistory((prev) => {
+          if (prev.length === 0) {
+            const initialIteration: HistoryIteration = {
+              id: `iter_0_${res.topologyHash.slice(0, 8)}`,
+              parentId: null,
+              label: 'Iteration 0 (Baseline)',
+              topology: currentTopology,
+              result: res,
+            };
+            return [initialIteration];
+          }
+          const latest = prev[prev.length - 1];
+          if (latest.result.topologyHash === res.topologyHash) {
+            return prev;
+          }
+          const nextIteration: HistoryIteration = {
+            id: `iter_${prev.length}_${res.topologyHash.slice(0, 8)}`,
+            parentId: latest.id,
+            label: `Iteration ${prev.length}`,
+            topology: currentTopology,
+            result: res,
+          };
+          return [...prev, nextIteration];
+        });
+      } finally {
+        setIsEvaluating(false);
+      }
+    }, 120);
+  }, []);
+
+  const handleApplyFix = useCallback(
+    (finding: Finding, remediationId?: string) => {
+      const currentTopology = topoLiveRef.current;
+      const previousResult = evaluationResult;
+
+      history.touch('setting change', snapRef.current);
+
+      const remediatedTopology = applyRemediation(
+        currentTopology,
+        finding,
+        remediationId,
+      );
+      applyTopology(remediatedTopology);
+
+      setIsEvaluating(true);
+      setTimeout(() => {
+        try {
+          const nextResult = evaluateTopology(remediatedTopology);
+          setEvaluationResult(nextResult);
+
+          if (previousResult) {
+            const diff = calculateEvaluationDiff(previousResult, nextResult);
+            setActiveDiff(diff);
+          }
+
+          const fixKey = remediationId ?? finding.remediationId ?? 'Fix';
+          const fixLabel = REMEDIATION_REGISTRY[fixKey]?.title || fixKey;
+
+          setExperimentHistory((prev) => {
+            const parent = prev.length > 0 ? prev[prev.length - 1] : null;
+            const newIteration: HistoryIteration = {
+              id: `iter_${prev.length}_${nextResult.topologyHash.slice(0, 8)}`,
+              parentId: parent ? parent.id : null,
+              label: `Iteration ${prev.length} (${fixLabel})`,
+              appliedRemediationId: remediationId ?? finding.remediationId,
+              topology: remediatedTopology,
+              result: nextResult,
+            };
+            return [...prev, newIteration];
+          });
+        } finally {
+          setIsEvaluating(false);
+        }
+      }, 120);
+    },
+    [applyTopology, evaluationResult, history],
+  );
+
+  const handleSelectIteration = useCallback(
+    (iterationId: string) => {
+      const iter = experimentHistory.find((it) => it.id === iterationId);
+      if (!iter) return;
+      applyTopology(iter.topology);
+      setEvaluationResult(iter.result);
+      setActiveDiff(null);
+    },
+    [applyTopology, experimentHistory],
+  );
+
+  const handleSelectNodeOrEdge = useCallback(
+    (target: { nodeId?: string; edgeId?: string }) => {
+      if (target.nodeId) {
+        setSelectedIds(new Set([target.nodeId]));
+      }
+    },
+    [],
+  );
+
   /* ---------------- keyboard ---------------- */
 
   useEffect(() => {
@@ -2311,6 +2441,12 @@ export default function App() {
        * selection-driven and an empty panel is not worth opening.
        */
       if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === 'e' || e.key === 'E') {
+          e.preventDefault();
+          if (evaluatorOpen) setEvaluatorOpen(false);
+          else handleEvaluate();
+          return;
+        }
         if (e.key === 'c' || e.key === 'C') {
           e.preventDefault();
           toggleLibrary();
@@ -2349,6 +2485,8 @@ export default function App() {
     toggleMetrics,
     toggleInspector,
     hasSelection,
+    evaluatorOpen,
+    handleEvaluate,
   ]);
 
   /* ---------------- derived ---------------- */
@@ -2542,6 +2680,8 @@ export default function App() {
             lost={lostRps}
             empty={topology.nodes.length === 0}
             noTrafficSource={offeredRps === 0 && findClients(topology).length === 0}
+            onEvaluate={handleEvaluate}
+            isEvaluating={isEvaluating}
           />
         </div>
 
@@ -2963,6 +3103,19 @@ export default function App() {
       <ArchitectureToCode
         open={architectureOpen}
         onClose={() => setArchitectureOpen(false)}
+      />
+
+      <EvaluatorModal
+        open={evaluatorOpen}
+        onClose={() => setEvaluatorOpen(false)}
+        topology={topology}
+        result={evaluationResult}
+        isEvaluating={isEvaluating}
+        history={experimentHistory}
+        activeDiff={activeDiff}
+        onApplyFix={handleApplyFix}
+        onSelectIteration={handleSelectIteration}
+        onSelectNodeOrEdge={handleSelectNodeOrEdge}
       />
     </div>
   );

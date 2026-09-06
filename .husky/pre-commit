@@ -3,4 +3,8 @@
 #
 # lint-staged formats just the files you staged, so a commit can never
 # introduce a formatting failure in CI.
-bunx lint-staged
+if command -v bunx >/dev/null 2>&1; then
+  bunx lint-staged
+else
+  npx lint-staged
+fi

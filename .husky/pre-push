@@ -4,8 +4,13 @@
 # Everything below mirrors .github/workflows/ci.yml. If you change one, change
 # the other.
 
+CMD="npm run"
+if command -v bun >/dev/null 2>&1; then
+  CMD="bun run"
+fi
+
 echo "Typechecking..."
-bun run typecheck || {
+$CMD typecheck || {
   echo ""
   echo "Typecheck failed. Fix the errors above, or push with --no-verify if"
   echo "you genuinely mean to push a broken build."
@@ -13,16 +18,16 @@ bun run typecheck || {
 }
 
 echo "Linting..."
-bun run lint || exit 1
+$CMD lint || exit 1
 
 echo "Checking formatting..."
-bun run format:check || {
+$CMD format:check || {
   echo ""
-  echo "Formatting is off. Run: bun run format"
+  echo "Formatting is off. Run: $CMD format"
   exit 1
 }
 
 echo "Running tests..."
-bun run test || exit 1
+$CMD test || exit 1
 
 echo "All checks passed."

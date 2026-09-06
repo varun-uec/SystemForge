@@ -7,7 +7,9 @@ import { ArchitectureToCode } from './ArchitectureToCode';
 let container: HTMLDivElement;
 let root: Root;
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeEach(() => {
   container = document.createElement('div');
@@ -47,7 +49,9 @@ describe('ArchitectureToCode component', () => {
     const handleClose = vi.fn();
     render(<ArchitectureToCode open={true} onClose={handleClose} />);
 
-    const closeBtn = document.querySelector<HTMLButtonElement>('button[aria-label="Close"]');
+    const closeBtn = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Close"]',
+    );
     expect(closeBtn).not.toBeNull();
     act(() => closeBtn?.click());
     expect(handleClose).toHaveBeenCalledTimes(1);
@@ -70,7 +74,9 @@ describe('ArchitectureToCode component', () => {
     const card = document.querySelector<HTMLElement>('.ac-card');
     expect(card).not.toBeNull();
     act(() => {
-      card?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      card?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
     });
     expect(handleClose).toHaveBeenCalledTimes(1);
   });
@@ -100,7 +106,9 @@ describe('ArchitectureToCode component', () => {
     });
 
     const command = document.querySelector('.ac-command');
-    expect(command?.textContent).toBe('Use the architecture-to-code skill on system-doc.md.');
+    expect(command?.textContent).toBe(
+      'Use the architecture-to-code skill on system-doc.md.',
+    );
 
     const previewName = document.querySelector('.ac-preview-name');
     expect(previewName?.textContent).toBe('system-doc.md');
@@ -142,7 +150,9 @@ describe('ArchitectureToCode component', () => {
       await Promise.resolve();
     });
 
-    expect(writeTextMock).toHaveBeenCalledWith('Use the architecture-to-code skill on diagram.png.');
+    expect(writeTextMock).toHaveBeenCalledWith(
+      'Use the architecture-to-code skill on diagram.png.',
+    );
 
     const status = document.querySelector('.ac-status');
     expect(status?.textContent).toBe('Copied.');

@@ -98,6 +98,67 @@ describe('evaluator stability analysis', () => {
     expect(findings[0].id).toBe('UNSTABLE_CAPACITY_service-1');
   });
 
+  it('calculates shard slots as shardCount * shardCapacity', () => {
+    // 4 shards * 5 slots = 20 slots; 40ms -> 20 * 25 = 500 RPS
+    const shardNode = makeTestNode('sharded-db', 'shard', {
+      shardCount: 4,
+      shardCapacity: 5,
+      serviceMs: 40,
+    });
+    const info = calculateNodeServiceCapacity(shardNode);
+    expect(info.effectiveCapacitySlots).toBe(20);
+    expect(info.sustainableRps).toBe(500);
+  });
+
+  it('clamps sustainable capacity to rateLimitRps when it is the binding constraint', () => {
+    // Raw: 10 slots * 100 = 1000 RPS, but rate limiter caps admissions at 200 RPS
+    const limited = makeTestNode('rl', 'ratelimiter', {
+      capacity: 10,
+      serviceMs: 10,
+      rateLimitRps: 200,
+    });
+    expect(calculateNodeServiceCapacity(limited).sustainableRps).toBe(200);
+
+    // Rate limit above raw capacity does not raise it
+    const generous = makeTestNode('rl2', 'ratelimiter', {
+      capacity: 10,
+      serviceMs: 10,
+      rateLimitRps: 5000,
+    });
+    expect(calculateNodeServiceCapacity(generous).sustainableRps).toBe(1000);
+  });
+
+  it('treats rho exactly at 1.0 as unstable (rho < 1 is the stability condition)', () => {
+    const topology: Topology = {
+      nodes: [
+        makeTestNode('client-1', 'client', { rps: 100 }),
+        // 2 slots * 50 = 100 RPS capacity, arrival 100 -> rho = 1.0 exactly
+        makeTestNode('service-1', 'service', {
+          capacity: 2,
+          instances: 1,
+          serviceMs: 20,
+        }),
+      ],
+      edges: [{ id: 'e1', from: 'client-1', to: 'service-1', weight: 1 }],
+    };
+    const s = evaluateTopologyStability(topology, 1.0).get('service-1')!;
+    expect(s.trafficIntensity).toBe(1.0);
+    expect(s.isStable).toBe(false);
+  });
+
+  it('scales arrival rates by the traffic multiplier', () => {
+    const topology: Topology = {
+      nodes: [
+        makeTestNode('client-1', 'client', { rps: 100 }),
+        makeTestNode('service-1', 'service', { capacity: 20, serviceMs: 10 }), // 2000 RPS
+      ],
+      edges: [{ id: 'e1', from: 'client-1', to: 'service-1', weight: 1 }],
+    };
+    const s = evaluateTopologyStability(topology, 3.0).get('service-1')!;
+    expect(s.arrivalRps).toBe(300);
+    expect(s.trafficIntensity).toBeCloseTo(0.15, 5);
+  });
+
   it('accounts for cache hit reduction when calculating downstream arrival rates', () => {
     const topology: Topology = {
       nodes: [

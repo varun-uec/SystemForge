@@ -96,6 +96,12 @@ export interface EvaluationResult {
   readonly score: EvaluationScore;
   readonly findings: readonly Finding[];
   readonly estimatedMonthlyCostUsd: number;
+  /**
+   * Wall-clock timestamp of evaluation. This is the ONLY non-deterministic field
+   * in the artifact: same topology + seed + scenarios reproduces every other field
+   * byte-identically. Excluded from diff/equality comparisons; pass a fixed value
+   * via EvaluationOptions.evaluatedAt for byte-identical determinism tests.
+   */
   readonly evaluatedAt: string;
 }
 

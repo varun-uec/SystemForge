@@ -1,0 +1,197 @@
+/* ==========================================================================
+   From an architecture doc.
+
+   This file owns .ac-* only, and reuses .btn / the app-file-input and the
+   tokens from index.css without re-declaring any of them. Same dialog shell
+   as the shortcuts card: a compact centred card, not a wide gallery, because
+   the content here is a short linear flow rather than a grid to scan.
+   ========================================================================== */
+
+.ac-root {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-5);
+}
+
+.ac-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  cursor: default;
+  animation: ac-scrim-in var(--dur-slow) var(--ease-out);
+}
+
+.ac-root.is-closing .ac-scrim {
+  animation: ac-scrim-out var(--dur-base) var(--ease) forwards;
+}
+
+.ac-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: min(560px, 100%);
+  max-height: min(720px, 100%);
+  min-height: 0;
+  padding: var(--sp-5);
+  overflow-y: auto;
+  background: var(--surface);
+  border: var(--bw) solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  outline: none;
+  animation: ac-card-in var(--dur-slow) var(--ease-out);
+}
+
+.ac-root.is-closing .ac-card {
+  animation: ac-card-out var(--dur-base) var(--ease) forwards;
+}
+
+.ac-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.ac-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-med);
+  line-height: var(--lh-sm);
+  color: var(--text);
+}
+
+.ac-sub {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-body);
+  line-height: var(--lh-sm);
+  color: var(--text-dim);
+}
+
+.ac-note,
+.ac-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-prose);
+  color: var(--text-dim);
+  text-wrap: pretty;
+}
+
+.ac-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  background: var(--surface-2);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--r-btn);
+}
+
+.ac-preview-name {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-med);
+  color: var(--text);
+  overflow-wrap: break-word;
+}
+
+.ac-preview-text {
+  margin: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  line-height: var(--lh-prose);
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.ac-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  border-radius: var(--r-btn);
+}
+
+.ac-command-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.ac-command {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-2);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--r-btn);
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.ac-status {
+  margin: 0;
+  min-height: 1.2em;
+  font-size: var(--fs-label);
+  color: var(--text-dim);
+}
+
+@keyframes ac-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ac-card-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes ac-scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ac-scrim-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-card,
+  .ac-scrim,
+  .ac-root.is-closing .ac-card,
+  .ac-root.is-closing .ac-scrim {
+    animation-duration: 0.01ms;
+  }
+}

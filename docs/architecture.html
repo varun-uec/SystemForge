@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="An architecture explainer for Breakscale's discrete-event simulator: the render loop, measured percentiles, the shared trust boundary, and where everything is stored.">
+<title>How Breakscale Works</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* ---------------------------------------------------------------
+     Tokens. `signal` (amber) marks load rising; `calm` (teal) marks
+     the steady state; `crit` (red) marks the tail that breaks first.
+     Everything else is ink/paper/line, chosen with a cool-slate bias
+     rather than pure grey.
+  ----------------------------------------------------------------- */
+  :root{
+    --paper:#f2f5f6;
+    --surface:#ffffff;
+    --ink:#12191c;
+    --ink-2:#4c5a5f;
+    --ink-3:#7c8b90;
+    --line:#dde4e6;
+    --line-2:#c9d2d4;
+    --signal:#c2660c;
+    --signal-ink:#8a480a;
+    --calm:#0f8f82;
+    --calm-ink:#0b6b61;
+    --crit:#b23a2e;
+    --code-bg:#e9edee;
+    --shadow: 0 1px 2px rgba(18,25,28,.06), 0 8px 24px -12px rgba(18,25,28,.12);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#0d1214;
+      --surface:#141b1e;
+      --ink:#e9eef0;
+      --ink-2:#a6b4b8;
+      --ink-3:#77878c;
+      --line:#243033;
+      --line-2:#324044;
+      --signal:#e2913f;
+      --signal-ink:#f2ac66;
+      --calm:#3fc2b3;
+      --calm-ink:#63d3c6;
+      --crit:#e07061;
+      --code-bg:#1a2225;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 28px -14px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0d1214;
+    --surface:#141b1e;
+    --ink:#e9eef0;
+    --ink-2:#a6b4b8;
+    --ink-3:#77878c;
+    --line:#243033;
+    --line-2:#324044;
+    --signal:#e2913f;
+    --signal-ink:#f2ac66;
+    --calm:#3fc2b3;
+    --calm-ink:#63d3c6;
+    --crit:#e07061;
+    --code-bg:#1a2225;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 28px -14px rgba(0,0,0,.5);
+  }
+
+  *{ box-sizing:border-box; }
+  html{ color-scheme: light dark; }
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    font-size:16px;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,.mono{ font-family:"IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace; }
+  h1,h2,h3{ text-wrap:balance; letter-spacing:-0.01em; }
+  .num, code, .stat-value, td.num-cell, .legend-val{ font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1; }
+  a{ color:var(--signal-ink); text-decoration-color:var(--line-2); text-underline-offset:3px; }
+  a:hover{ text-decoration-color:currentColor; }
+  a:focus-visible, button:focus-visible, [tabindex]:focus-visible{
+    outline:2px solid var(--signal); outline-offset:2px; border-radius:2px;
+  }
+  ::selection{ background:var(--signal); color:#fff; }
+
+  .wrap{ max-width:1040px; margin:0 auto; padding:0 28px; }
+  .prose{ max-width:66ch; }
+
+  /* ---------------- top matter ---------------- */
+  .masthead{
+    border-bottom:1px solid var(--line);
+    padding:16px 0;
+  }
+  .masthead-row{ display:flex; align-items:center; justify-content:space-between; gap:16px; }
+  .brand{ display:flex; align-items:baseline; gap:8px; }
+  .brand-mark{ font-weight:700; letter-spacing:-0.02em; font-size:15px; }
+  .brand-tag{ color:var(--ink-3); font-size:13px; }
+  .masthead-link{ font-size:13px; color:var(--ink-2); text-decoration:none; border-bottom:1px solid var(--line-2); }
+  .masthead-link:hover{ color:var(--signal-ink); border-color:var(--signal-ink); }
+
+  .hero{ padding:56px 0 40px; }
+  .eyebrow{
+    display:inline-flex; align-items:center; gap:8px;
+    font-size:12px; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--signal-ink); font-weight:600; margin-bottom:18px;
+  }
+  .eyebrow::before{ content:""; width:18px; height:1px; background:var(--signal); }
+  .hero h1{ font-size:clamp(30px,4.6vw,46px); line-height:1.08; margin:0 0 18px; font-weight:600; }
+  .hero .dek{ font-size:17px; color:var(--ink-2); max-width:60ch; margin:0 0 28px; }
+
+  .stat-row{
+    display:flex; flex-wrap:wrap; gap:0;
+    border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+  }
+  .stat{
+    flex:1 1 140px; padding:14px 18px; border-right:1px solid var(--line);
+  }
+  .stat:last-child{ border-right:none; }
+  .stat-value{ font-size:22px; font-weight:600; color:var(--ink); }
+  .stat-label{ font-size:12px; color:var(--ink-3); margin-top:2px; }
+
+  /* ---------------- sections ---------------- */
+  section{ padding:52px 0; border-bottom:1px solid var(--line); }
+  section:last-of-type{ border-bottom:none; }
+  .section-head{ display:flex; gap:18px; align-items:baseline; margin-bottom:22px; }
+  .section-no{ font-size:13px; color:var(--ink-3); }
+  h2{ font-size:24px; font-weight:600; margin:0; }
+  h3{ font-size:16px; font-weight:600; margin:28px 0 10px; }
+  p{ margin:0 0 14px; color:var(--ink-2); }
+  p strong{ color:var(--ink); font-weight:600; }
+  .lede{ font-size:16px; }
+
+  .callout{
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:12.5px; padding:2px 8px; border-radius:4px;
+    background:var(--code-bg); color:var(--ink); border:1px solid var(--line-2);
+    white-space:nowrap;
+  }
+  .callout.signal{ color:var(--signal-ink); border-color:color-mix(in srgb, var(--signal) 40%, var(--line-2)); }
+  .callout.calm{ color:var(--calm-ink); border-color:color-mix(in srgb, var(--calm) 40%, var(--line-2)); }
+
+  /* ---------------- figures / diagrams ---------------- */
+  figure{ margin:0; }
+  .diagram-card{
+    background:var(--surface); border:1px solid var(--line); border-radius:8px;
+    padding:20px clamp(8px,3vw,28px); box-shadow:var(--shadow);
+  }
+  figcaption{
+    font-size:13.5px; color:var(--ink-3); margin-top:12px; max-width:64ch;
+  }
+  figcaption .k{ color:var(--ink-2); }
+  svg text{ fill:currentColor; }
+  .diagram-card svg{ display:block; width:100%; height:auto; color:var(--ink-2); }
+  .d-node text{ fill:var(--ink); }
+  .d-node rect{ fill:var(--surface); stroke:var(--ink-3); }
+  .d-node.emph rect{ stroke:var(--signal); stroke-width:1.6; }
+  .d-node.emph text.title{ fill:var(--signal-ink); }
+  .d-arrow{ stroke:var(--ink-3); fill:none; }
+  .d-arrow.hot{ stroke:var(--signal); }
+  .d-arrow.reject{ stroke:var(--crit); stroke-dasharray:3 3; }
+  .d-label{ font-size:11px; fill:var(--ink-3); }
+  .d-label.hot{ fill:var(--signal-ink); }
+  .d-label.reject{ fill:var(--crit); }
+
+  /* ---------------- the chart ---------------- */
+  .chart-wrap{ position:relative; }
+  .legend{ display:flex; gap:18px; margin:14px 2px 0; flex-wrap:wrap; }
+  .legend-item{ display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--ink-2); }
+  .legend-swatch{ width:14px; height:3px; border-radius:2px; }
+  #chart-tip{
+    position:absolute; pointer-events:none; opacity:0; transition:opacity .1s;
+    background:var(--ink); color:var(--paper); font-family:"IBM Plex Mono",monospace;
+    font-size:11.5px; line-height:1.5; padding:8px 10px; border-radius:6px;
+    transform:translate(-50%,-100%); white-space:nowrap; z-index:2;
+    box-shadow:var(--shadow);
+  }
+  #chart-tip .row{ display:flex; gap:10px; justify-content:space-between; }
+  #chart-tip .row .v{ font-variant-numeric:tabular-nums; }
+  #chart-crosshair{ stroke:var(--ink-3); stroke-width:1; stroke-dasharray:2 2; opacity:0; }
+
+  /* ---------------- tables ---------------- */
+  table{ width:100%; border-collapse:collapse; font-size:14px; }
+  th{ text-align:left; font-weight:600; color:var(--ink-3); font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; padding:0 12px 10px; border-bottom:1px solid var(--line-2); }
+  td{ padding:11px 12px; border-bottom:1px solid var(--line); color:var(--ink-2); vertical-align:top; }
+  tr:last-child td{ border-bottom:none; }
+  td.k{ color:var(--ink); font-family:"IBM Plex Mono",monospace; font-size:13px; white-space:nowrap; }
+  .table-scroll{ overflow-x:auto; }
+  .table-card{ background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:6px 6px; box-shadow:var(--shadow); }
+
+  /* ---------------- ordered steps ---------------- */
+  .steps{ counter-reset:step; list-style:none; margin:0; padding:0; }
+  .steps li{
+    counter-increment:step; position:relative; padding:10px 0 10px 40px;
+    border-bottom:1px solid var(--line); color:var(--ink-2);
+  }
+  .steps li:last-child{ border-bottom:none; }
+  .steps li::before{
+    content:counter(step);
+    position:absolute; left:0; top:9px;
+    width:24px; height:24px; border-radius:50%;
+    background:var(--code-bg); color:var(--ink-2);
+    font-family:"IBM Plex Mono",monospace; font-size:12px; font-weight:600;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .steps li strong{ color:var(--ink); }
+
+  /* ---------------- file map ---------------- */
+  .filemap{
+    font-family:"IBM Plex Mono",monospace; font-size:13px;
+    background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+    padding:18px 20px; overflow-x:auto; color:var(--ink-2);
+  }
+  .filemap .dir{ color:var(--signal-ink); font-weight:600; }
+  .filemap .note{ color:var(--ink-3); }
+  .filemap .file{ color:var(--ink); }
+
+  /* ---------------- footer ---------------- */
+  footer{ padding:40px 0 60px; }
+  .foot-row{ display:flex; flex-wrap:wrap; gap:24px; justify-content:space-between; align-items:flex-end; }
+  .foot-facts{ display:flex; flex-wrap:wrap; gap:16px 28px; }
+  .foot-fact{ font-size:13px; color:var(--ink-3); }
+  .foot-fact .v{ color:var(--ink); font-family:"IBM Plex Mono",monospace; }
+  .foot-note{ font-size:13px; color:var(--ink-3); max-width:52ch; margin-top:18px; }
+
+  @media (max-width:640px){
+    .hero{ padding:40px 0 28px; }
+    section{ padding:40px 0; }
+    .stat{ flex-basis:50%; }
+    .section-head{ flex-direction:column; gap:4px; }
+  }
+
+  @media (prefers-reduced-motion:no-preference){
+    .draw-in{ animation:draw 1.1s ease-out forwards; }
+    @keyframes draw{ from{ stroke-dashoffset:var(--len); } to{ stroke-dashoffset:0; } }
+  }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap masthead-row">
+    <div class="brand">
+      <span class="brand-mark">BREAKSCALE</span>
+      <span class="brand-tag">// internals</span>
+    </div>
+    <a class="masthead-link" href="https://github.com/xevrion/breakscale" target="_blank" rel="noreferrer noopener">Source on GitHub ↗</a>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div class="eyebrow">Architecture &amp; explainer</div>
+    <h1>How Breakscale works</h1>
+    <p class="dek">Breakscale is a discrete-event simulator wearing a diagram editor. You build a
+      topology, drag a load slider, and a real event loop runs requests through queues, servers and
+      failure modes fast enough to redraw ten times a second. Nothing here is a static app with a
+      backend — the whole thing, engine included, runs in the tab that's open right now.</p>
+
+    <div class="stat-row">
+      <div class="stat"><div class="stat-value num">33</div><div class="stat-label">component kinds</div></div>
+      <div class="stat"><div class="stat-value num">23</div><div class="stat-label">worked examples</div></div>
+      <div class="stat"><div class="stat-value num">855</div><div class="stat-label">tests, all green</div></div>
+      <div class="stat"><div class="stat-value num">0</div><div class="stat-label">servers involved</div></div>
+    </div>
+  </div>
+
+  <!-- =========================================================
+       THE HERO CHART — the shape the whole product exists to show
+  ========================================================== -->
+  <div class="wrap" style="padding-bottom:8px;">
+    <figure>
+      <div class="diagram-card chart-wrap">
+        <svg id="latency-chart" viewBox="0 0 920 340" role="img"
+             aria-label="Line chart of p50, p95 and p99 latency against server utilization from 10% to 95%. p50 rises gently, p95 rises faster, and p99 climbs sharply once utilization passes about 80%, illustrating why tail latency is what breaks first."
+             preserveAspectRatio="xMidYMid meet">
+          <!-- gridlines -->
+          <g class="d-label">
+            <line x1="70" y1="26" x2="70" y2="270" stroke="var(--line)" stroke-width="1"/>
+            <line x1="70" y1="270" x2="880" y2="270" stroke="var(--line)" stroke-width="1"/>
+            <g id="gridlines"></g>
+            <g id="y-ticks"></g>
+            <g id="x-ticks"></g>
+          </g>
+          <text x="70" y="16" class="d-label" font-size="11.5">latency, ms</text>
+          <text x="880" y="298" class="d-label" font-size="11.5" text-anchor="end">server utilization (ρ)</text>
+
+          <!-- data lines, drawn by script below -->
+          <g id="lines"></g>
+          <!-- end labels -->
+          <g id="end-labels" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600"></g>
+
+          <line id="chart-crosshair" x1="0" y1="26" x2="0" y2="270"/>
+        </svg>
+        <div id="chart-tip" role="status" aria-live="polite"></div>
+        <div class="legend">
+          <span class="legend-item"><span class="legend-swatch" style="background:var(--calm)"></span>p50 — typical request</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:var(--signal)"></span>p95 — a slow one in twenty</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:var(--crit)"></span>p99 — the tail that pages someone</span>
+        </div>
+      </div>
+      <figcaption>
+        <span class="k">What this shows —</span> the queueing-theory shape every Breakscale example
+        eventually produces: as utilization approaches 1, wait time diverges faster for the tail than
+        for the median, because a single slow request now stacks on top of a queue that's already
+        full. Illustrative curve, drawn from the standard M/M/1 waiting-time relation
+        <span class="mono">ρ/(1−ρ)</span> — the simulator's own <span class="mono">p50/p95/p99</span>
+        are measured from real completed requests, not approximated this way; run any example past
+        80% load to see the true numbers.
+      </figcaption>
+    </figure>
+  </div>
+
+  <!-- =========================================================
+       SECTION — THE LOOP
+  ========================================================== -->
+  <div class="wrap">
+    <section id="loop">
+      <div class="section-head"><span class="section-no mono">01</span><h2>The loop that runs it</h2></div>
+      <div class="prose">
+        <p class="lede">Every request on the canvas is a real object moving through a
+          <strong>discrete-event simulation</strong> living in <code class="callout">src/sim</code> —
+          no React, no DOM, no I/O. It owns a min-heap of future events (arrivals, service
+          completions, timeouts) and a seeded PRNG, and nothing else. You could delete every
+          component file in the repo and still run it from a script.</p>
+        <p>The interface drives that engine from the outside, on two different clocks, because they
+          answer two different questions:</p>
+      </div>
+
+      <figure style="margin-top:26px;">
+        <div class="diagram-card">
+          <svg viewBox="0 0 960 300" role="img"
+               aria-label="Diagram: the browser's animation frame calls Engine.advance every frame, about sixty times a second, advancing simulated time. Roughly every tenth frame, at ten hertz, Engine.snapshot reads measured stats into React state, which renders the Canvas, Inspector and Metrics panels. Edits made in those panels — dragging a node, changing a config field, connecting an edge — flow back through setTopology or updateNodeConfig into the running engine, without resetting simulated time.">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+              </marker>
+            </defs>
+
+            <!-- nodes -->
+            <g class="d-node"><rect x="16" y="122" width="140" height="52" rx="6"/><text x="86" y="144" text-anchor="middle" class="title" font-size="12.5" font-weight="600">requestAnimationFrame</text><text x="86" y="160" text-anchor="middle" font-size="11" fill="var(--ink-3)">the browser's clock</text></g>
+
+            <g class="d-node emph"><rect x="216" y="112" width="176" height="72" rx="6"/><text x="304" y="140" text-anchor="middle" class="title" font-size="13" font-weight="600">Engine.advance(dt)</text><text x="304" y="156" text-anchor="middle" font-size="11" fill="var(--ink-3)">src/sim — event heap</text><text x="304" y="172" text-anchor="middle" font-size="11" fill="var(--ink-3)">pops &amp; resolves events</text></g>
+
+            <g class="d-node"><rect x="452" y="112" width="176" height="72" rx="6"/><text x="540" y="140" text-anchor="middle" class="title" font-size="13" font-weight="600">Engine.snapshot()</text><text x="540" y="156" text-anchor="middle" font-size="11" fill="var(--ink-3)">measured, not approximated</text><text x="540" y="172" text-anchor="middle" font-size="11" fill="var(--ink-3)">p50/p95/p99, queues, errors</text></g>
+
+            <g class="d-node"><rect x="688" y="24" width="150" height="50" rx="6"/><text x="763" y="46" text-anchor="middle" class="title" font-size="12.5" font-weight="600">Canvas</text><text x="763" y="62" text-anchor="middle" font-size="11" fill="var(--ink-3)">SVG diagram</text></g>
+            <g class="d-node"><rect x="688" y="86" width="150" height="50" rx="6"/><text x="763" y="108" text-anchor="middle" class="title" font-size="12.5" font-weight="600">Metrics</text><text x="763" y="124" text-anchor="middle" font-size="11" fill="var(--ink-3)">charts, per node</text></g>
+            <g class="d-node"><rect x="688" y="148" width="150" height="50" rx="6"/><text x="763" y="170" text-anchor="middle" class="title" font-size="12.5" font-weight="600">Inspector</text><text x="763" y="186" text-anchor="middle" font-size="11" fill="var(--ink-3)">selected node's config</text></g>
+
+            <!-- forward path -->
+            <path class="d-arrow hot" marker-end="url(#arrow)" d="M156,148 L216,148"/>
+            <text x="186" y="138" text-anchor="middle" class="d-label hot">every frame, ~16ms</text>
+
+            <path class="d-arrow" marker-end="url(#arrow)" d="M392,148 L452,148"/>
+            <text x="422" y="138" text-anchor="middle" class="d-label">every 10th frame</text>
+
+            <path class="d-arrow" marker-end="url(#arrow)" d="M628,140 C650,110 660,95 688,58" fill="none"/>
+            <path class="d-arrow" marker-end="url(#arrow)" d="M628,148 L688,148" fill="none"/>
+            <path class="d-arrow" marker-end="url(#arrow)" d="M628,156 C650,180 660,190 688,196" fill="none"/>
+            <text x="654" y="212" text-anchor="middle" class="d-label">React setState, 10Hz</text>
+
+            <!-- feedback path -->
+            <path class="d-arrow" marker-end="url(#arrow)" d="M763,198 C763,250 480,270 304,270 C230,270 216,240 216,184" fill="none"/>
+            <text x="490" y="288" text-anchor="middle" class="d-label">drag · edit config · wire an edge</text>
+            <text x="490" y="248" text-anchor="middle" class="d-label" font-size="10.5" font-style="italic">setTopology() / updateNodeConfig() — simulated time never resets</text>
+          </svg>
+        </div>
+        <figcaption>
+          <span class="k">What this shows —</span> the simulation and the interface run on two
+          different rates on purpose. The engine advances every animation frame so fast traffic
+          doesn't skip events; React only re-renders at <span class="mono">10Hz</span>, because a
+          human eye can't use latency numbers updating faster than that, and re-rendering the whole
+          canvas 60 times a second would cost far more than it's worth. Edits made in the panels feed
+          straight back into the live engine — undo/redo and preset loads never call
+          <span class="mono">reset()</span>, because throwing away a running simulation to apply one
+          config change would be a worse experience than the redraw it's avoiding.
+        </figcaption>
+      </figure>
+    </section>
+
+    <!-- =========================================================
+         SECTION — WHERE THE NUMBERS COME FROM
+    ========================================================== -->
+    <section id="numbers">
+      <div class="section-head"><span class="section-no mono">02</span><h2>Where the numbers come from</h2></div>
+      <div class="prose">
+        <p class="lede">The project's one hard rule, stated in its own contributor guide: <strong>a
+          number is measured or it doesn't ship.</strong> Three mechanics make that true rather than
+          aspirational.</p>
+
+        <h3>Percentiles are read off a ring buffer</h3>
+        <p>Every node keeps a fixed-size ring buffer of its own completed request latencies, each
+          timestamped. Reading <span class="mono">p50/p95/p99</span> means walking that buffer
+          newest-first, stopping at a trailing time window, sorting what's left, and interpolating —
+          the same thing a real APM tool does, not a multiplier applied to a mean. Because the UI
+          polls this at 10Hz but the underlying samples only change when a request actually
+          completes, the result is memoized per <span class="mono">(time, sample count)</span> so an
+          unchanged window is never re-sorted for nothing.</p>
+
+        <h3>Service time has real variance</h3>
+        <p>A component's config gives a mean service time and a coefficient of variation, sampled
+          from a <strong>gamma distribution</strong> (shape <span class="mono">k = 1/cv²</span>) via
+          a Marsaglia–Tsang sampler. <span class="mono">cv = 0</span> is deterministic,
+          <span class="mono">cv = 1</span> is exponential, and anything above that is heavy-tailed —
+          which is what makes p99 diverge from p50 at all. A mean-only model would give every
+          percentile the same number.</p>
+
+        <h3>The same seed replays the same system</h3>
+        <p>All of it — arrivals, service times, which replica an autoscaler spins up — is drawn from
+          a single seeded <span class="mono">mulberry32</span> generator. Same topology, same seed,
+          same traffic pattern: byte-identical snapshots, every time. That determinism is what a
+          worked example's "note" can rely on — the failure it describes is guaranteed to be the
+          failure a student sees.</p>
+
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:20px;">
+          <span class="callout signal">trailing window · 10s</span>
+          <span class="callout">ring buffer · capped, strided above a few hundred samples</span>
+          <span class="callout calm">snapshot rate · 10Hz</span>
+          <span class="callout">events per advance() · hard ceiling</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         SECTION — TRUST BOUNDARY
+    ========================================================== -->
+    <section id="trust">
+      <div class="section-head"><span class="section-no mono">03</span><h2>Four doors, one lock</h2></div>
+      <div class="prose">
+        <p class="lede">Breakscale has no server, so nothing is ever uploaded — but that doesn't mean
+          nothing is untrusted. Four different features hand the app JSON that came from somewhere
+          else, and every one of them is treated as hostile until proven otherwise.</p>
+      </div>
+
+      <figure style="margin-top:26px;">
+        <div class="diagram-card">
+          <svg viewBox="0 0 960 260" role="img"
+               aria-label="Diagram: four untrusted sources — a share link, an imported .breakscale file, a clipboard paste, and a restored backup — all converge on one pair of shared validators, isTopology and sanitizeAnnotations. What passes becomes the app's topology state and reaches the engine; what fails is discarded and the student's current design is left untouched.">
+            <defs>
+              <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+              </marker>
+            </defs>
+
+            <g class="d-node"><rect x="10" y="6" width="168" height="42" rx="6"/><text x="94" y="31" text-anchor="middle" font-size="12" fill="var(--ink)">Share link (URL hash)</text></g>
+            <g class="d-node"><rect x="10" y="58" width="168" height="42" rx="6"/><text x="94" y="83" text-anchor="middle" font-size="12" fill="var(--ink)">Imported .breakscale file</text></g>
+            <g class="d-node"><rect x="10" y="110" width="168" height="42" rx="6"/><text x="94" y="135" text-anchor="middle" font-size="12" fill="var(--ink)">Clipboard paste</text></g>
+            <g class="d-node"><rect x="10" y="162" width="168" height="42" rx="6"/><text x="94" y="187" text-anchor="middle" font-size="12" fill="var(--ink)">Restored backup file</text></g>
+
+            <g class="d-node emph"><rect x="352" y="72" width="240" height="88" rx="6"/>
+              <text x="472" y="100" text-anchor="middle" class="title" font-size="13" font-weight="600">isTopology()</text>
+              <text x="472" y="118" text-anchor="middle" class="title" font-size="13" font-weight="600">+ sanitizeAnnotations()</text>
+              <text x="472" y="140" text-anchor="middle" font-size="10.5" fill="var(--ink-3)">the same two checks, called</text>
+              <text x="472" y="153" text-anchor="middle" font-size="10.5" fill="var(--ink-3)">from all four doors — never a second copy</text>
+            </g>
+
+            <g class="d-node"><rect x="748" y="30" width="190" height="52" rx="6"/><text x="843" y="52" text-anchor="middle" class="title" font-size="12.5" font-weight="600">App topology state</text><text x="843" y="68" text-anchor="middle" font-size="11" fill="var(--ink-3)">→ Engine.setTopology()</text></g>
+            <g class="d-node"><rect x="748" y="150" width="190" height="52" rx="6"/><text x="843" y="172" text-anchor="middle" font-size="12" fill="var(--crit)">discarded</text><text x="843" y="188" text-anchor="middle" font-size="11" fill="var(--ink-3)">current design left as-is</text></g>
+
+            <path class="d-arrow" marker-end="url(#arrow2)" d="M178,27 C260,27 300,90 352,105"/>
+            <path class="d-arrow" marker-end="url(#arrow2)" d="M178,79 C260,79 300,100 352,110"/>
+            <path class="d-arrow" marker-end="url(#arrow2)" d="M178,131 C260,131 300,125 352,120"/>
+            <path class="d-arrow" marker-end="url(#arrow2)" d="M178,183 C280,183 300,135 352,125"/>
+
+            <path class="d-arrow hot" marker-end="url(#arrow2)" d="M592,98 C660,88 700,70 748,56"/>
+            <text x="668" y="72" text-anchor="middle" class="d-label hot">structurally valid</text>
+
+            <path class="d-arrow reject" marker-end="url(#arrow2)" d="M592,134 C660,150 700,164 748,176"/>
+            <text x="668" y="198" text-anchor="middle" class="d-label reject">dangling edge, bad kind, non-finite value</text>
+          </svg>
+        </div>
+        <figcaption>
+          <span class="k">What this shows —</span> a share link, a dropped file, a clipboard paste
+          and a restored backup are four different features but one attack surface, so they share one
+          gate. <span class="mono">isTopology()</span> checks every field the engine will actually
+          dereference — a dangling edge, an unknown component kind, a non-finite coordinate — and
+          <span class="mono">sanitizeAnnotations()</span> regex-gates colour values before they ever
+          reach a style attribute. Nothing here half-applies: a payload either comes back as a whole
+          topology or the student's current design is left exactly as it was.
+        </figcaption>
+      </figure>
+
+      <div class="prose" style="margin-top:28px;">
+        <h3>The share link, specifically</h3>
+        <p>A design travels entirely in the URL <em>fragment</em> — everything after
+          <span class="mono">#</span> — because a browser never sends that part to a server, so a
+          link really is a complete, self-contained document. The payload is a version prefix
+          (<span class="mono">d1.</span>) followed by base64url text; where the browser supports it,
+          the JSON is deflated first, since a twenty-node example can be several kilobytes. The
+          decoder caps <em>output</em> bytes mid-stream, not just input — the standard defence against
+          a small link inflating into hundreds of megabytes before anyone notices.</p>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         SECTION — STORAGE MAP
+    ========================================================== -->
+    <section id="storage">
+      <div class="section-head"><span class="section-no mono">04</span><h2>What lives where</h2></div>
+      <div class="prose">
+        <p class="lede">Everything persists to <span class="mono">localStorage</span>, scoped to your
+          browser on this one machine. Five keys, five different lifetimes:</p>
+      </div>
+
+      <div class="table-card" style="margin-top:8px;">
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Key</th><th>What it holds</th><th>Written</th></tr></thead>
+            <tbody>
+              <tr><td class="k">breakscale.session.v1</td><td>The design you left open — restores on reload, autosaved, never announced.</td><td>Continuously, debounced</td></tr>
+              <tr><td class="k">breakscale.designs.v1</td><td>Named saves — up to 20; the oldest is evicted, and you're told when it is.</td><td>On "Save"</td></tr>
+              <tr><td class="k">breakscale.preferences.v1</td><td>Theme, vendor mode (AWS / GCP / Azure / generic), glossary tooltips.</td><td>On change</td></tr>
+              <tr><td class="k">breakscale.layout.v1</td><td>Panel sizes — the inspector rail, the charts strip, the minimap toggle.</td><td>On resize</td></tr>
+              <tr><td class="k">breakscale.sizes.v1</td><td>Which vendor instance size each node is priced at (db.r6g.large, and so on).</td><td>On pick</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p class="prose" style="margin-top:16px;">A <strong>backup</strong> is the door out: one JSON
+        file carrying all five keys' raw values, for moving to a new machine or surviving a cleared
+        cache. It replaces rather than merges on restore — there's no principled answer to which of
+        two designs named "draft" should win, so the app doesn't pretend to have one.</p>
+    </section>
+
+    <!-- =========================================================
+         SECTION — COMPONENTS
+    ========================================================== -->
+    <section id="components">
+      <div class="section-head"><span class="section-no mono">05</span><h2>33 components, one registry</h2></div>
+      <div class="prose">
+        <p class="lede">Every component kind — load balancer, cache, sharded store, circuit breaker,
+          websocket gateway — is a plain string literal plus a <strong>behaviour object</strong>
+          resolved once when the topology is built. The event loop never branches on
+          <span class="mono">kind === 'cache'</span> anywhere; it holds a reference to that node's
+          behaviour and calls through it, so adding a kind never touches the hot path. The bar for a
+          new one, enforced by the project's own contributor guide:</p>
+      </div>
+
+      <ol class="steps">
+        <li><strong>Declare the kind</strong> in <span class="mono">NodeKind</span>.</li>
+        <li><strong>Config fields</strong>, each documented with its meaning and units.</li>
+        <li><strong>A behaviour object</strong> in the matching <span class="mono">behaviour-*.ts</span> file — control, data, edge, messaging, resilience or store.</li>
+        <li><strong>Default config</strong> and a palette label.</li>
+        <li><strong>A readout</strong> in <span class="mono">readoutFor</span> — never a field that's structurally always zero for that kind.</li>
+        <li><strong>A glossary entry</strong>, written for a reader who hasn't taken a queueing theory course.</li>
+        <li><strong>A test proving it behaves differently</strong> from every existing kind — a kind that's just another kind with different defaults doesn't get added.</li>
+      </ol>
+    </section>
+
+    <!-- =========================================================
+         SECTION — PROJECT MAP
+    ========================================================== -->
+    <section id="map">
+      <div class="section-head"><span class="section-no mono">06</span><h2>Project map</h2></div>
+      <div class="filemap">
+<span class="dir">src/sim/</span>          <span class="note">the engine — no React, no DOM, no I/O</span>
+  engine.ts        <span class="note">event heap, node state, snapshot(), percentiles</span>
+  behaviour-*.ts   <span class="note">control · data · edge · messaging · resilience · store</span>
+  random.ts        <span class="note">mulberry32 + gamma/exponential sampling</span>
+  presets.ts       <span class="note">the 23 worked examples</span>
+<span class="dir">src/components/</span>   <span class="note">canvas, inspector, metrics, palette</span>
+  Canvas.tsx       <span class="note">hand-rolled SVG diagram + pointer/gesture layer</span>
+  Metrics.tsx      <span class="note">charts drawn directly, no charting library</span>
+<span class="dir">src/content/</span>      <span class="note">glossary text, vendor pricing (AWS/GCP/Azure)</span>
+<span class="file">src/App.tsx</span>      <span class="note">shell — layout, the rAF loop, persistence, undo/redo</span>
+<span class="file">src/share.ts · designFile.ts · clipboard.ts · backup.ts</span>
+                   <span class="note">the trust boundary — see §03</span>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <div class="wrap">
+      <div class="foot-row">
+        <div class="foot-facts">
+          <div class="foot-fact">React <span class="v">19</span> · TypeScript · Vite</div>
+          <div class="foot-fact">Tests <span class="v">855 / 855</span> passing</div>
+          <div class="foot-fact">Known vulnerabilities <span class="v">0</span></div>
+          <div class="foot-fact">Backend <span class="v">none — static deploy</span></div>
+          <div class="foot-fact">License <span class="v">MIT</span></div>
+        </div>
+        <a class="masthead-link" href="https://breakscale.vercel.app" target="_blank" rel="noreferrer noopener">Try it ↗</a>
+      </div>
+      <p class="foot-note">Written as a companion to a codebase audit of the repository. Numbers and
+        mechanics above were read from the source, not the README.</p>
+    </div>
+  </footer>
+</main>
+
+<script>
+(function(){
+  "use strict";
+  // ---- chart data: illustrative M/M/1-shaped waiting time vs utilization ----
+  // p(rho) = mean * (1 + (rho/(1-rho)) * spread), mean=20ms baseline.
+  var mean = 20;
+  var rhos = [];
+  for (var r = 0.10; r <= 0.951; r += 0.05) rhos.push(Math.round(r*100)/100);
+
+  function seriesFor(spread, cap){
+    return rhos.map(function(rho){
+      var load = rho/(1-rho);
+      var v = mean * (1 + load*spread);
+      return Math.min(v, cap);
+    });
+  }
+  var p50 = seriesFor(0.70, 340);
+  var p95 = seriesFor(2.20, 340);
+  var p99 = seriesFor(3.85, 340);
+
+  var svg = document.getElementById('latency-chart');
+  var ns = 'http://www.w3.org/2000/svg';
+  var PLOT = { x0:70, x1:880, y0:270, y1:26 };
+  var yMax = 340;
+
+  function X(i){ return PLOT.x0 + (i/(rhos.length-1)) * (PLOT.x1-PLOT.x0); }
+  function Y(v){ return PLOT.y0 + (Math.min(v,yMax)/yMax) * (PLOT.y1-PLOT.y0); }
+
+  function el(tag, attrs){
+    var e = document.createElementNS(ns, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  // gridlines (horizontal, at 0/100/200/300ms) + y ticks
+  var gl = document.getElementById('gridlines');
+  var yt = document.getElementById('y-ticks');
+  [0,100,200,300].forEach(function(v){
+    gl.appendChild(el('line', {x1:PLOT.x0, x2:PLOT.x1, y1:Y(v), y2:Y(v), stroke:'var(--line)', 'stroke-width':1, opacity:0.7}));
+    var t = el('text', {x:PLOT.x0-10, y:Y(v)+4, 'text-anchor':'end', 'font-size':11});
+    t.textContent = v + 'ms';
+    yt.appendChild(t);
+  });
+  var xt = document.getElementById('x-ticks');
+  [0.1,0.3,0.5,0.7,0.9].forEach(function(v){
+    var idx = rhos.reduce(function(best,cur,i){ return Math.abs(cur-v) < Math.abs(rhos[best]-v) ? i : best; }, 0);
+    var t = el('text', {x:X(idx), y:PLOT.y0+22, 'text-anchor':'middle', 'font-size':11});
+    t.textContent = v.toFixed(1);
+    xt.appendChild(t);
+  });
+
+  function path(series){
+    return series.map(function(v,i){ return (i===0?'M':'L') + X(i).toFixed(1) + ',' + Y(v).toFixed(1); }).join(' ');
+  }
+
+  var lines = document.getElementById('lines');
+  var defs = [
+    { data:p50, color:'var(--calm)', label:'p50', key:'p50' },
+    { data:p95, color:'var(--signal)', label:'p95', key:'p95' },
+    { data:p99, color:'var(--crit)', label:'p99', key:'p99' }
+  ];
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  defs.forEach(function(d){
+    var p = el('path', { d:path(d.data), stroke:d.color, 'stroke-width':2.5, fill:'none', 'stroke-linecap':'round', 'stroke-linejoin':'round' });
+    lines.appendChild(p);
+    if (!reduceMotion){
+      var len = p.getTotalLength();
+      p.style.setProperty('--len', len);
+      p.style.strokeDasharray = len;
+      p.style.strokeDashoffset = len;
+      p.classList.add('draw-in');
+    }
+    var lastI = d.data.length-1;
+    var lbl = el('text', { x:X(lastI)+8, y:Y(d.data[lastI])+4, fill:d.color });
+    lbl.textContent = d.label;
+    document.getElementById('end-labels').appendChild(lbl);
+  });
+
+  // ---- hover crosshair + tooltip ----
+  var tip = document.getElementById('chart-tip');
+  var crosshair = document.getElementById('chart-crosshair');
+  var card = svg.closest('.diagram-card');
+
+  function nearestIndex(mouseX){
+    var frac = (mouseX - PLOT.x0) / (PLOT.x1 - PLOT.x0);
+    var i = Math.round(frac * (rhos.length-1));
+    return Math.max(0, Math.min(rhos.length-1, i));
+  }
+
+  function pt(svgEl, clientX, clientY){
+    var r = svgEl.getBoundingClientRect();
+    var vb = svgEl.viewBox.baseVal;
+    var x = (clientX - r.left) / r.width * vb.width;
+    var y = (clientY - r.top) / r.height * vb.height;
+    return {x:x, y:y};
+  }
+
+  svg.addEventListener('mousemove', function(ev){
+    var p = pt(svg, ev.clientX, ev.clientY);
+    if (p.x < PLOT.x0 || p.x > PLOT.x1){ tip.style.opacity = 0; crosshair.style.opacity = 0; return; }
+    var i = nearestIndex(p.x);
+    var cx = X(i);
+    crosshair.setAttribute('x1', cx); crosshair.setAttribute('x2', cx);
+    crosshair.style.opacity = 1;
+
+    tip.innerHTML =
+      '<div class="row"><span>ρ (utilization)</span><span class="v">' + rhos[i].toFixed(2) + '</span></div>' +
+      '<div class="row"><span style="color:var(--calm)">p50</span><span class="v">' + Math.round(p50[i]) + 'ms</span></div>' +
+      '<div class="row"><span style="color:var(--signal)">p95</span><span class="v">' + Math.round(p95[i]) + 'ms</span></div>' +
+      '<div class="row"><span style="color:var(--crit)">p99</span><span class="v">' + Math.round(p99[i]) + 'ms</span></div>';
+
+    var cardRect = card.getBoundingClientRect();
+    var svgRect = svg.getBoundingClientRect();
+    var frac = (cx - 0) / svg.viewBox.baseVal.width;
+    var xPx = svgRect.left - cardRect.left + frac * svgRect.width;
+    var yPx = svgRect.top - cardRect.top + (Y(p99[i]) / svg.viewBox.baseVal.height) * svgRect.height;
+    tip.style.left = xPx + 'px';
+    tip.style.top = Math.max(28, yPx - 12) + 'px';
+    tip.style.opacity = 1;
+  });
+  svg.addEventListener('mouseleave', function(){ tip.style.opacity = 0; crosshair.style.opacity = 0; });
+})();
+</script>
+</body>
+</html>

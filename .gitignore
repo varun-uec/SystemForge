@@ -17,3 +17,6 @@ scratch-*.ts
 
 # Local Claude Code permissions, per-machine and not part of the project
 .claude/settings.local.json
+
+# Scaffolds written by the architecture-to-code skill, not published repo content
+generated/

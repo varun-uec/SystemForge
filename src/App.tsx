@@ -34,6 +34,7 @@ import { Palette } from './components/Palette';
 import { Glossary } from './components/Glossary';
 import { Shortcuts } from './components/Shortcuts';
 import { Examples } from './components/Examples';
+import { ArchitectureToCode } from './components/ArchitectureToCode';
 import { cloneSubgraph, isTopology, selectionSubgraph } from './clipboard';
 import type { ClipboardSubgraph } from './clipboard';
 import {
@@ -641,6 +642,7 @@ export default function App() {
   const backupInputRef = useRef<HTMLInputElement | null>(null);
 
   const [examplesOpen, setExamplesOpen] = useState(false);
+  const [architectureOpen, setArchitectureOpen] = useState(false);
 
   /* ---------------- panel layout ---------------- */
 
@@ -829,6 +831,11 @@ export default function App() {
         label: 'Examples',
         icon: 'M3 4a1 1 0 0 1 1-1h6v7H3zM14 3h6a1 1 0 0 1 1 1v5h-7zM3 13h7v8H4a1 1 0 0 1-1-1zM14 13h7v7a1 1 0 0 1-1 1h-6z',
         onSelect: () => setExamplesOpen(true),
+      },
+      {
+        label: 'From an architecture doc',
+        icon: 'M4 4a2 2 0 0 1 2-2h7l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM13 2v5h5M9.5 12.5l-2 2 2 2M14.5 12.5l2 2-2 2',
+        onSelect: () => setArchitectureOpen(true),
       },
       {
         label: 'Glossary',
@@ -2951,6 +2958,11 @@ export default function App() {
         presets={PRESETS}
         activePresetId={presetId}
         onLoad={handleLoadPreset}
+      />
+
+      <ArchitectureToCode
+        open={architectureOpen}
+        onClose={() => setArchitectureOpen(false)}
       />
     </div>
   );

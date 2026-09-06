@@ -90,8 +90,25 @@ export function estimateTopologyArrivalRates(
     }
   }
 
-  // Filter out control edges: supervisory links carry no request traffic
-  const trafficEdges = topology.edges.filter((e) => !e.control);
+  // Filter out control edges: supervisory links carry no request traffic.
+  // Precompute per-node in/out adjacency and per-source outgoing weight totals once,
+  // so the convergence loop below is O(iterations * edges) rather than rebuilding
+  // filtered lists per node per iteration.
+  const nodeById = new Map(topology.nodes.map((n) => [n.id, n]));
+  const incomingByNode = new Map<string, typeof topology.edges>();
+  const outgoingWeightTotal = new Map<string, number>();
+  const outgoingCount = new Map<string, number>();
+  for (const e of topology.edges) {
+    if (e.control) continue;
+    const inList = incomingByNode.get(e.to);
+    if (inList) inList.push(e);
+    else incomingByNode.set(e.to, [e]);
+    outgoingWeightTotal.set(
+      e.from,
+      (outgoingWeightTotal.get(e.from) ?? 0) + Math.max(0, e.weight),
+    );
+    outgoingCount.set(e.from, (outgoingCount.get(e.from) ?? 0) + 1);
+  }
 
   // 2. Iteratively propagate traffic through outgoing edges until convergence
   // (handles branches, cascades, and potential cycles up to 30 iterations)
@@ -104,23 +121,19 @@ export function estimateTopologyArrivalRates(
       if (node.kind === 'client') continue; // Clients generate external traffic
 
       // Sum all incoming traffic from parent edges
-      const incomingEdges = trafficEdges.filter((e) => e.to === node.id);
+      const incomingEdges = incomingByNode.get(node.id) ?? [];
       let incomingRps = 0;
 
       for (const edge of incomingEdges) {
-        const sourceNode = topology.nodes.find((n) => n.id === edge.from);
+        const sourceNode = nodeById.get(edge.from);
         if (!sourceNode) continue;
 
         const sourceArrival = arrivalRates.get(sourceNode.id) ?? 0;
-        const sourceOutgoing = trafficEdges.filter((e) => e.from === sourceNode.id);
-        const totalWeight = sourceOutgoing.reduce(
-          (acc, e) => acc + Math.max(0, e.weight),
-          0,
-        );
+        const totalWeight = outgoingWeightTotal.get(sourceNode.id) ?? 0;
         const edgeShare =
           totalWeight > 0
             ? Math.max(0, edge.weight) / totalWeight
-            : 1 / sourceOutgoing.length;
+            : 1 / (outgoingCount.get(sourceNode.id) ?? 1);
 
         let outgoingFlow = sourceArrival * edgeShare;
 
@@ -190,7 +203,11 @@ export function evaluateTopologyStability(
 
     const isStable = trafficIntensity < 1.0;
 
-    // Estimate time for bounded queue to saturate under overload: queueLimit / (lambda - capacity)
+    // Fluid-model ESTIMATE of time for a bounded queue to saturate under overload:
+    // queueLimit / (lambda - capacity). This is a static approximation, surfaced only
+    // as an `estimated_saturation_time` evidence metric — never as a measured value.
+    // The measured counterpart is ScenarioTelemetry.saturationTimeMs, produced by the
+    // engine in runner.ts. UI must not conflate the two.
     let saturationTimeEstimateMs: number | null = null;
     const queueLimit = node.config.queueLimit ?? 0;
     if (!isStable && queueLimit > 0 && arrivalRps > sustainableRps) {

@@ -19,72 +19,77 @@ export * from './diff';
 export * from './ai';
 
 /**
+ * Monthly USD cost per unit (instance / replica / shard / fixed appliance) by node kind.
+ * On-demand cloud pricing profiles, $15-$70/unit-month. Tunable in one place: adjust
+ * these for reserved pricing or a different provider without touching the walk below.
+ * `DEFAULT_UNIT_COST` covers any kind not listed. `client` is 0 (traffic originates
+ * outside the account).
+ * ponytail: flat rate table, not per-region — add a pricing profile param if someone asks for AWS-vs-GCP
+ */
+export const COST_RATES: Readonly<Record<string, number>> = {
+  client: 0,
+  lb: 20,
+  apigateway: 20,
+  service: 35,
+  worker: 35,
+  transcoder: 35,
+  lambda: 35,
+  cache: 30,
+  db: 70,
+  replica: 70,
+  shard: 70,
+  queue: 25,
+  streambroker: 25,
+  pubsub: 25,
+  retryqueue: 25,
+  ratelimiter: 15,
+  breaker: 15,
+  loadshedder: 15,
+  bulkhead: 15,
+};
+
+const DEFAULT_UNIT_COST = 30;
+
+/** Fixed-price appliances: one flat charge regardless of instances/replicas/shards. */
+const FIXED_PRICE_KINDS = new Set([
+  'lb',
+  'apigateway',
+  'queue',
+  'streambroker',
+  'pubsub',
+  'retryqueue',
+  'ratelimiter',
+  'breaker',
+  'loadshedder',
+  'bulkhead',
+]);
+
+function positiveIntConfig(value: unknown): number {
+  return typeof value === 'number' && value > 0 ? Math.floor(value) : 1;
+}
+
+/**
  * Estimates baseline monthly cloud compute costs in USD for a topology.
  *
- * Grounded in on-demand cloud pricing profiles ($15-$70/instance-month).
- * Provides a pure, deterministic calculation with zero I/O and zero external dependencies.
+ * Pure, deterministic, zero I/O. Rates live in COST_RATES.
  */
 export function estimateTopologyCost(topology: Topology): number {
   let total = 0;
   for (const node of topology.nodes) {
-    const instances =
-      typeof node.config.instances === 'number' && node.config.instances > 0
-        ? Math.floor(node.config.instances)
-        : 1;
+    const rate = COST_RATES[node.kind] ?? DEFAULT_UNIT_COST;
+    if (rate === 0) continue;
 
-    switch (node.kind) {
-      case 'client':
-        // Traffic originates outside the account; 0 cloud compute cost.
-        break;
-      case 'lb':
-      case 'apigateway':
-        total += 20;
-        break;
-      case 'service':
-      case 'worker':
-      case 'transcoder':
-      case 'lambda':
-        total += 35 * instances;
-        break;
-      case 'cache':
-        total += 30 * instances;
-        break;
-      case 'db':
-        total += 70 * instances;
-        break;
-      case 'replica': {
-        const replicaCount =
-          typeof node.config.replicaCount === 'number' && node.config.replicaCount > 0
-            ? Math.floor(node.config.replicaCount)
-            : 1;
-        // Primary plus replicas
-        total += 70 * (replicaCount + 1);
-        break;
-      }
-      case 'shard': {
-        const shardCount =
-          typeof node.config.shardCount === 'number' && node.config.shardCount > 0
-            ? Math.floor(node.config.shardCount)
-            : 1;
-        total += 70 * shardCount;
-        break;
-      }
-      case 'queue':
-      case 'streambroker':
-      case 'pubsub':
-      case 'retryqueue':
-        total += 25;
-        break;
-      case 'ratelimiter':
-      case 'breaker':
-      case 'loadshedder':
-      case 'bulkhead':
-        total += 15;
-        break;
-      default:
-        total += 30 * instances;
-        break;
+    let units: number;
+    if (FIXED_PRICE_KINDS.has(node.kind)) {
+      units = 1;
+    } else if (node.kind === 'replica') {
+      units = positiveIntConfig(node.config.replicaCount) + 1; // primary + replicas
+    } else if (node.kind === 'shard') {
+      units = positiveIntConfig(node.config.shardCount);
+    } else {
+      units = positiveIntConfig(node.config.instances);
     }
+    total += rate * units;
   }
   return total;
 }
@@ -104,6 +109,9 @@ export function estimateTopologyCost(topology: Topology): number {
  *
  * Returns a versioned, immutable EvaluationResult ('1.0').
  */
+// ponytail: unbounded Map cache, add LRU eviction if the experiment tree grows past ~100 nodes
+const evaluationCache = new Map<string, Omit<EvaluationResult, 'evaluatedAt'>>();
+
 export function evaluateTopology(
   topology: Topology,
   options?: Partial<EvaluationOptions>,
@@ -115,6 +123,21 @@ export function evaluateTopology(
 
   // 1. Provenance hash
   const topologyHash = hashTopology(topology);
+
+  // The artifact is fully reproducible from hash + seed + simulatorVersion + scenario
+  // definitions + cost override, so those form the cache key. evaluatedAt is layered
+  // back on per call since it is the sole non-deterministic field.
+  const cacheKey = JSON.stringify([
+    topologyHash,
+    seed,
+    simulatorVersion,
+    scenarios,
+    options?.estimatedMonthlyCostUsd ?? null,
+  ]);
+  const cached = evaluationCache.get(cacheKey);
+  if (cached) {
+    return { ...cached, evaluatedAt };
+  }
 
   // 2. Static analysis
   const staticFindings = lintTopology(topology);
@@ -139,7 +162,7 @@ export function evaluateTopology(
   // 7. Deterministic rubric scoring
   const { score } = evaluateScore(findings, telemetry, estimatedMonthlyCostUsd);
 
-  return {
+  const deterministic: Omit<EvaluationResult, 'evaluatedAt'> = {
     version: '1.0',
     topologyHash,
     simulatorVersion,
@@ -148,6 +171,8 @@ export function evaluateTopology(
     score,
     findings,
     estimatedMonthlyCostUsd,
-    evaluatedAt,
   };
+  evaluationCache.set(cacheKey, deterministic);
+
+  return { ...deterministic, evaluatedAt };
 }

@@ -109,6 +109,23 @@ describe('evaluator end-to-end facade', () => {
     expect(JSON.stringify(r1)).toBe(JSON.stringify(r2));
   });
 
+  it('2b. cache serves distinct evaluatedAt while every deterministic field stays byte-identical', () => {
+    const topo = createE2ETopology();
+    const first = evaluateTopology(topo, {
+      seed: 42,
+      evaluatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const second = evaluateTopology(topo, {
+      seed: 42,
+      evaluatedAt: '2026-12-31T23:59:59.000Z',
+    });
+
+    expect(second.evaluatedAt).toBe('2026-12-31T23:59:59.000Z');
+    const { evaluatedAt: _a, ...detFirst } = first;
+    const { evaluatedAt: _b, ...detSecond } = second;
+    expect(JSON.stringify(detSecond)).toBe(JSON.stringify(detFirst));
+  });
+
   it('3. full remediation loop: Simulation -> Evaluation -> Remediation -> Proof', () => {
     const initialTopo = createE2ETopology();
 

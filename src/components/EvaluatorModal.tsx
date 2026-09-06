@@ -765,7 +765,10 @@ export function EvaluatorModal({
 
                     <div className="eval-diff-findings-split">
                       <div className="eval-diff-box">
-                        <h4 className="eval-section-title" style={{ color: '#2d6b38' }}>
+                        <h4
+                          className="eval-section-title"
+                          style={{ color: 'var(--ok)' }}
+                        >
                           Resolved Findings ({activeDiff.resolvedFindingIds.length})
                         </h4>
                         {activeDiff.resolvedFindingIds.length === 0 ? (
@@ -780,7 +783,10 @@ export function EvaluatorModal({
                       </div>
 
                       <div className="eval-diff-box">
-                        <h4 className="eval-section-title" style={{ color: '#8f2020' }}>
+                        <h4
+                          className="eval-section-title"
+                          style={{ color: 'var(--danger)' }}
+                        >
                           New Findings ({activeDiff.newFindingIds.length})
                         </h4>
                         {activeDiff.newFindingIds.length === 0 ? (
@@ -842,7 +848,9 @@ export function EvaluatorModal({
                         <span>Lost Requests</span>
                         <span
                           className="eval-evidence-value"
-                          style={{ color: s.lostRequests > 0 ? '#8f2020' : undefined }}
+                          style={{
+                            color: s.lostRequests > 0 ? 'var(--danger)' : undefined,
+                          }}
                         >
                           {s.lostRequests}
                         </span>
